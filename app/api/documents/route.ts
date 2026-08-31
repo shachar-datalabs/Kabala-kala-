@@ -45,14 +45,9 @@ function errorMessage(error: unknown) {
   return message.slice(0, 500) || "אירעה שגיאה לא צפויה";
 }
 
-function safePaymentDetails(input: ReceiptInput) {
+function storedPaymentSummary(input: ReceiptInput) {
   return JSON.stringify({
-    paymentReference: input.paymentReference,
     webVendor: input.webVendor,
-    checkBankName: input.checkBankName,
-    checkNumber: input.checkNumber,
-    checkBranch: input.checkBranch,
-    checkAccount: input.checkAccount,
     cardType: input.cardType,
     cardLastFour: input.cardLastFour,
     otherPaymentName: input.otherPaymentName,
@@ -157,7 +152,7 @@ export async function POST(request: Request) {
         documentDate: input.documentDate,
         dueDate: input.dueDate || null,
         paymentType: input.documentType === "receipt" ? input.paymentType : null,
-        paymentDetailsJson: safePaymentDetails(input),
+        paymentDetailsJson: storedPaymentSummary(input),
         description: input.description,
         status: "pending",
         createdAt: now,
