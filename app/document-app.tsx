@@ -179,12 +179,13 @@ export function DocumentApp() {
 
   useEffect(() => {
     void fetch("/api/status", { cache: "no-store" })
-      .then((response) => response.json())
-      .then((result: { connected?: boolean }) =>
-        setConnected(Boolean(result.connected)),
-      )
+      .then(async (response) => {
+        const result = (await response.json()) as { connected?: boolean };
+        setConnected(Boolean(result.connected));
+      })
       .catch(() => setConnected(false));
-    void loadDocuments();
+    const loadTimer = window.setTimeout(() => void loadDocuments(), 0);
+    return () => window.clearTimeout(loadTimer);
   }, [loadDocuments]);
 
   const update = <Key extends keyof FormState>(
