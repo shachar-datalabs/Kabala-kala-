@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { z } from "zod";
 import type { ReceiptInput } from "@/lib/receipt-schema";
 
 type RuntimeEnv = {
@@ -7,15 +8,17 @@ type RuntimeEnv = {
   EZCOUNT_BASE_URL?: string;
 };
 
-type EzcountResponse = {
-  success?: boolean;
-  errMsg?: string;
-  errNum?: string | number;
-  pdf_link?: string;
-  pdf_link_copy?: string;
-  doc_number?: string | number;
-  doc_uuid?: string;
-};
+const ezcountResponseSchema = z
+  .object({
+    success: z.boolean(),
+    errMsg: z.string().optional(),
+    errNum: z.union([z.string(), z.number()]).optional(),
+    pdf_link: z.string().url().optional(),
+    pdf_link_copy: z.string().url().optional(),
+    doc_number: z.union([z.string(), z.number()]).optional(),
+    doc_uuid: z.string().min(1).optional(),
+  })
+  .passthrough();
 
 export type IssuedReceipt = {
   docNumber: string;
@@ -23,19 +26,22 @@ export type IssuedReceipt = {
   pdfLink: string;
 };
 
+export class EzcountUncertainError extends Error {}
+
+const DEMO_BASE_URL = "https://demo.ezcount.co.il";
+
 function runtimeEnv(): RuntimeEnv {
   return env as unknown as RuntimeEnv;
 }
 
 export function getEzcountStatus() {
   const runtime = runtimeEnv();
+  const demoOnly = runtime.EZCOUNT_BASE_URL === DEMO_BASE_URL;
   return {
     configured: Boolean(
-      runtime.EZCOUNT_API_KEY && runtime.EZCOUNT_DEVELOPER_EMAIL,
+      runtime.EZCOUNT_API_KEY && runtime.EZCOUNT_DEVELOPER_EMAIL && demoOnly,
     ),
-    environment: runtime.EZCOUNT_BASE_URL?.includes("demo.")
-      ? "demo"
-      : "production",
+    environment: demoOnly ? "demo" : "blocked",
   };
 }
 
@@ -112,19 +118,17 @@ export async function issueReceipt(input: ReceiptInput): Promise<IssuedReceipt> 
     throw new Error("EasyCount עדיין לא מחובר למערכת");
   }
 
-  const baseUrl = runtime.EZCOUNT_BASE_URL || "https://api.ezcount.co.il";
-  const allowedBaseUrls = new Set([
-    "https://api.ezcount.co.il",
-    "https://demo.ezcount.co.il",
-  ]);
-  if (!allowedBaseUrls.has(baseUrl)) {
-    throw new Error("כתובת EasyCount אינה מאושרת");
+  const baseUrl = runtime.EZCOUNT_BASE_URL;
+  if (baseUrl !== DEMO_BASE_URL) {
+    throw new Error("הפקת מסמכים מותרת כרגע בסביבת EasyCount Demo בלבד");
   }
 
-  const response = await fetch(baseUrl + "/api/createDoc", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  let response: Response;
+  try {
+    response = await fetch(baseUrl + "/api/createDoc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
       developer_email: developerEmail,
       api_key: apiKey,
       type: input.documentType === "receipt" ? 400 : 300,
@@ -159,18 +163,35 @@ export async function issueReceipt(input: ReceiptInput): Promise<IssuedReceipt> 
       dont_send_email: input.sendEmail && input.customerEmail ? 0 : 1,
       send_copy: 1,
       print_type: "PDF",
-    }),
-    signal: AbortSignal.timeout(35000),
-  });
+      }),
+      signal: AbortSignal.timeout(35000),
+    });
+  } catch {
+    // The request may have reached EasyCount. The caller must retain the same
+    // transaction_id/idempotency key for any later reconciliation or retry.
+    throw new EzcountUncertainError(
+      "לא התקבל אישור מ-EasyCount. יש לבדוק את המסמך לפני ניסיון נוסף.",
+    );
+  }
 
-  const result = (await response.json().catch(() => ({}))) as EzcountResponse;
+  const parsedResult = ezcountResponseSchema.safeParse(
+    await response.json().catch(() => null),
+  );
+  if (!parsedResult.success) {
+    throw new EzcountUncertainError(
+      "EasyCount החזיר תשובה לא תקינה. יש לבדוק את המסמך בחשבון.",
+    );
+  }
+  const result = parsedResult.data;
   if (!response.ok || !result.success) {
     const detail = result.errMsg || "EasyCount לא הצליח להפיק את הקבלה";
     throw new Error(detail);
   }
 
   if (!result.doc_uuid || !result.doc_number || !result.pdf_link) {
-    throw new Error("EasyCount החזיר תשובה חלקית. יש לבדוק את המסמך בחשבון.");
+    throw new EzcountUncertainError(
+      "EasyCount החזיר תשובה חלקית. יש לבדוק את המסמך בחשבון.",
+    );
   }
 
   return {

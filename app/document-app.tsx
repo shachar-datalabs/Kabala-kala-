@@ -84,7 +84,7 @@ type SavedDocument = {
   paymentType: number | null;
   paymentTypeLabel: string | null;
   description: string;
-  status: "pending" | "issued" | "failed";
+  status: "pending" | "issued" | "failed" | "unknown";
   docNumber: string | null;
   docUuid: string | null;
   pdfLink: string | null;
@@ -1211,6 +1211,8 @@ function HistoryItem({ document }: { document: SavedDocument }) {
       ? { label: "הופק", color: "bg-emerald-100 text-emerald-800" }
       : document.status === "pending"
         ? { label: "בהפקה", color: "bg-amber-100 text-amber-800" }
+        : document.status === "unknown"
+          ? { label: "דרוש בירור", color: "bg-amber-100 text-amber-900" }
         : { label: "נכשל", color: "bg-red-100 text-red-800" };
 
   return (

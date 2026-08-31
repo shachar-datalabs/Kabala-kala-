@@ -1,7 +1,11 @@
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { businessDocuments } from "@/db/schema";
-import { getEzcountStatus, issueReceipt } from "@/lib/ezcount";
+import {
+  EzcountUncertainError,
+  getEzcountStatus,
+  issueReceipt,
+} from "@/lib/ezcount";
 import {
   documentTypeLabel,
   paymentMethodLabel,
@@ -41,7 +45,10 @@ function clientDocument(row: typeof businessDocuments.$inferSelect) {
 
 function errorMessage(error: unknown) {
   if (!(error instanceof Error)) return "אירעה שגיאה לא צפויה";
-  const message = error.message.replace(/\s+/g, " ").trim();
+  const message = error.message
+    .replace(/(?:api[_ -]?key|authorization|bearer)\s*[:=]?\s*\S+/gi, "[מידע חסוי]")
+    .replace(/\s+/g, " ")
+    .trim();
   return message.slice(0, 500) || "אירעה שגיאה לא צפויה";
 }
 
@@ -107,40 +114,9 @@ export async function POST(request: Request) {
   const now = new Date().toISOString();
 
   try {
-    const [existing] = await db
-      .select()
-      .from(businessDocuments)
-      .where(
-        and(
-          eq(businessDocuments.id, input.idempotencyKey),
-          eq(businessDocuments.ownerUserId, currentOwnerId),
-        ),
-      )
-      .limit(1);
-
-    if (existing?.status === "issued") {
-      return Response.json({ document: clientDocument(existing), duplicate: true });
-    }
-
-    if (
-      existing &&
-      (existing.customerName !== input.customerName ||
-        existing.amountAgorot !== Math.round(input.amount * 100) ||
-        existing.documentType !== input.documentType)
-    ) {
-      return Response.json(
-        { error: "מזהה המסמך כבר שויך למסמך אחר" },
-        { status: 409 },
-      );
-    }
-
-    if (existing) {
-      await db
-        .update(businessDocuments)
-        .set({ status: "pending", errorMessage: null, updatedAt: now })
-        .where(eq(businessDocuments.id, input.idempotencyKey));
-    } else {
-      await db.insert(businessDocuments).values({
+    const inserted = await db
+      .insert(businessDocuments)
+      .values({
         id: input.idempotencyKey,
         ownerUserId: currentOwnerId,
         customerName: input.customerName,
@@ -157,7 +133,72 @@ export async function POST(request: Request) {
         status: "pending",
         createdAt: now,
         updatedAt: now,
-      });
+      })
+      .onConflictDoNothing()
+      .returning({ id: businessDocuments.id });
+
+    const [existing] = inserted.length
+      ? [null]
+      : await db
+          .select()
+          .from(businessDocuments)
+          .where(
+            and(
+              eq(businessDocuments.id, input.idempotencyKey),
+              eq(businessDocuments.ownerUserId, currentOwnerId),
+            ),
+          )
+          .limit(1);
+
+    if (!inserted.length && !existing) {
+      return Response.json(
+        { error: "מזהה המסמך כבר נמצא בשימוש" },
+        { status: 409 },
+      );
+    }
+
+    if (existing?.status === "issued") {
+      return Response.json({ document: clientDocument(existing), duplicate: true });
+    }
+
+    if (
+      existing &&
+      (existing.customerName !== input.customerName ||
+        existing.amountAgorot !== Math.round(input.amount * 100) ||
+        existing.documentType !== input.documentType ||
+        existing.documentDate !== input.documentDate)
+    ) {
+      return Response.json(
+        { error: "מזהה המסמך כבר שויך למסמך אחר" },
+        { status: 409 },
+      );
+    }
+
+    if (existing?.status === "pending") {
+      return Response.json(
+        { error: "המסמך כבר נמצא בתהליך הפקה", code: "DOCUMENT_IN_PROGRESS" },
+        { status: 409 },
+      );
+    }
+
+    if (existing) {
+      const claimed = await db
+        .update(businessDocuments)
+        .set({ status: "pending", errorMessage: null, updatedAt: now })
+        .where(
+          and(
+            eq(businessDocuments.id, input.idempotencyKey),
+            eq(businessDocuments.ownerUserId, currentOwnerId),
+            eq(businessDocuments.status, existing.status),
+          ),
+        )
+        .returning({ id: businessDocuments.id });
+      if (!claimed.length) {
+        return Response.json(
+          { error: "המסמך כבר נמצא בתהליך הפקה", code: "DOCUMENT_IN_PROGRESS" },
+          { status: 409 },
+        );
+      }
     }
 
     const issued = await issueReceipt(input);
@@ -183,10 +224,12 @@ export async function POST(request: Request) {
     );
   } catch (error) {
     const message = errorMessage(error);
+    const failureStatus =
+      error instanceof EzcountUncertainError ? "unknown" : "failed";
     await db
       .update(businessDocuments)
       .set({
-        status: "failed",
+        status: failureStatus,
         errorMessage: message,
         updatedAt: new Date().toISOString(),
       })
