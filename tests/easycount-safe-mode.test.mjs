@@ -41,7 +41,7 @@ test("SAFE MODE stops execution before an external request", () => {
   assert.equal(externalRequests, 0);
 });
 
-test("production endpoint remains blocked", () => {
+test("production endpoint remains blocked without a separate explicit flag", () => {
   const status = evaluateEasycountConfiguration({
     EASYCOUNT_ENABLED: "true",
     EZCOUNT_BASE_URL: "https://api.ezcount.co.il",
@@ -51,6 +51,19 @@ test("production endpoint remains blocked", () => {
 
   assert.equal(status.configured, false);
   assert.equal(status.environment, "blocked");
+});
+
+test("production requires both explicit flags and both credentials", () => {
+  const status = evaluateEasycountConfiguration({
+    EASYCOUNT_ENABLED: "true",
+    EASYCOUNT_ALLOW_PRODUCTION: "true",
+    EZCOUNT_BASE_URL: "https://api.ezcount.co.il",
+    EZCOUNT_API_KEY: "test-placeholder",
+    EZCOUNT_DEVELOPER_EMAIL: "developer@example.test",
+  });
+
+  assert.equal(status.configured, true);
+  assert.equal(status.environment, "production");
 });
 
 test("demo requires the explicit flag and both credentials", () => {

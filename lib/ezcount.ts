@@ -2,7 +2,6 @@ import { env } from "cloudflare:workers";
 import { z } from "zod";
 import type { ReceiptInput } from "@/lib/receipt-schema";
 import {
-  EASYCOUNT_DEMO_BASE_URL,
   assertEasycountIssuingEnabled,
   evaluateEasycountConfiguration,
   type EasycountRuntimeConfig,
@@ -111,8 +110,8 @@ export async function issueReceipt(input: ReceiptInput): Promise<IssuedReceipt> 
   }
 
   const baseUrl = runtime.EZCOUNT_BASE_URL;
-  if (baseUrl !== EASYCOUNT_DEMO_BASE_URL) {
-    throw new Error("הפקת מסמכים מותרת כרגע בסביבת EasyCount Demo בלבד");
+  if (!baseUrl) {
+    throw new Error("כתובת EasyCount אינה מוגדרת");
   }
 
   let response: Response;

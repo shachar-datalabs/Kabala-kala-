@@ -68,7 +68,8 @@ npm run db:generate
 | משתנה | תפקיד | ברירת מחדל בטוחה |
 | --- | --- | --- |
 | `EASYCOUNT_ENABLED` | מאפשר בכלל ניסיון הפקה | `false` |
-| `EZCOUNT_BASE_URL` | כתובת השירות | `https://demo.ezcount.co.il` בלבד |
+| `EASYCOUNT_ALLOW_PRODUCTION` | אישור מפורש נוסף להפעלה מול Production | `false` |
+| `EZCOUNT_BASE_URL` | כתובת השירות | `https://demo.ezcount.co.il` |
 | `EZCOUNT_API_KEY` | secret בצד השרת | ריק |
 | `EZCOUNT_DEVELOPER_EMAIL` | מזהה המפתח באינטגרציה הקיימת | ריק |
 | `SITE_ORIGIN` | origin מקומי/מורשה | `http://localhost:3000` בדוגמה |
@@ -84,7 +85,7 @@ Secrets מוגדרים רק במערכת ה־Secrets של סביבת האירו�
 - הפעולה במסך יוצרת Draft בלבד ב־D1
 - ה־UI מציג במפורש שמדובר בטיוטה
 
-גם אם קיים API key בסביבה, החיבור חסום כל עוד הדגל אינו בדיוק `true`. הקוד חוסם כתובת production ומאפשר רק Demo. אין לשנות זאת ללא אישור מפורש.
+גם אם קיים API key בסביבה, החיבור חסום כל עוד הדגל אינו בדיוק `true`. סביבת Production דורשת בנוסף `EASYCOUNT_ALLOW_PRODUCTION=true` וכתובת מדויקת של EasyCount Production.
 
 ## EasyCount
 
@@ -107,7 +108,7 @@ Secrets מוגדרים רק במערכת ה־Secrets של סביבת האירו�
 
 1. להריץ build, lint, typecheck ו־tests.
 2. לבדוק diff, migrations ו־secrets.
-3. לוודא ש־`EASYCOUNT_ENABLED=false` ומדיניות הפרטיות לא השתנתה.
+3. לוודא שמדיניות הפרטיות לא השתנתה ושדגלי EasyCount תואמים לסביבה המאושרת.
 4. להגדיר secrets בממשק האירוח בלבד.
 
 אין לבצע deployment אוטומטי כחלק משינוי קוד. הפריסה נעשית רק לאחר בדיקה ואישור, ללא שינוי כתובת האתר הקיימת.
