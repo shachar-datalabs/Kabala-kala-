@@ -18,6 +18,7 @@ import {
   FileText,
   History,
   Loader2,
+  LayoutDashboard,
   Mail,
   Plus,
   ReceiptText,
@@ -25,7 +26,12 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
+  Settings as SettingsIcon,
+  Users,
 } from "lucide-react";
+import { ClientsView, type Client } from "@/app/clients-view";
+import { DashboardView } from "@/app/dashboard-view";
+import { SettingsView } from "@/app/settings-view";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,6 +56,7 @@ import {
 } from "@/lib/receipt-schema";
 
 type FormState = {
+  clientId: string;
   documentType: "receipt" | "proforma";
   customerName: string;
   customerEmail: string;
@@ -57,9 +64,11 @@ type FormState = {
   customerCrn: string;
   amount: string;
   documentDate: string;
+  paymentDate: string;
   dueDate: string;
   paymentType: string;
   description: string;
+  notes: string;
   paymentReference: string;
   webVendor: string;
   checkBankName: string;
@@ -74,6 +83,7 @@ type FormState = {
 
 type SavedDocument = {
   id: string;
+  clientId: string | null;
   documentType: "receipt" | "proforma";
   documentTypeLabel: string;
   customerName: string;
@@ -84,7 +94,7 @@ type SavedDocument = {
   paymentType: number | null;
   paymentTypeLabel: string | null;
   description: string;
-  status: "pending" | "issued" | "failed" | "unknown";
+  status: "draft" | "pending" | "issued" | "failed" | "unknown";
   docNumber: string | null;
   docUuid: string | null;
   pdfLink: string | null;
@@ -105,6 +115,7 @@ function israelDate(addDays = 0) {
 
 function initialForm(): FormState {
   return {
+    clientId: "",
     documentType: "receipt",
     customerName: "",
     customerEmail: "",
@@ -112,9 +123,11 @@ function initialForm(): FormState {
     customerCrn: "",
     amount: "",
     documentDate: israelDate(),
+    paymentDate: israelDate(),
     dueDate: israelDate(14),
     paymentType: "4",
     description: "",
+    notes: "",
     paymentReference: "",
     webVendor: "Bit",
     checkBankName: "",
@@ -150,7 +163,7 @@ function displayDate(value: string | null) {
 }
 
 export function DocumentApp() {
-  const [view, setView] = useState<"new" | "history">("new");
+  const [view, setView] = useState<"dashboard" | "new" | "history" | "clients" | "settings">("new");
   const [form, setForm] = useState<FormState>(() => initialForm());
   const [idempotencyKey, setIdempotencyKey] = useState(() => requestKey());
   const [submittedOnce, setSubmittedOnce] = useState(false);
@@ -163,6 +176,17 @@ export function DocumentApp() {
   const [submitError, setSubmitError] = useState("");
   const [success, setSuccess] = useState<SavedDocument | null>(null);
   const [search, setSearch] = useState("");
+  const [historyStatus, setHistoryStatus] = useState("");
+  const [historyClient, setHistoryClient] = useState("");
+  const [historyFrom, setHistoryFrom] = useState("");
+  const [historyTo, setHistoryTo] = useState("");
+  const [clients, setClients] = useState<Client[]>([]);
+
+  const loadClients = useCallback(async () => {
+    const response = await fetch("/api/clients", { cache: "no-store" });
+    const result = (await response.json()) as { clients?: Client[] };
+    if (response.ok) setClients(result.clients ?? []);
+  }, []);
 
   const loadDocuments = useCallback(async () => {
     setHistoryLoading(true);
@@ -185,8 +209,21 @@ export function DocumentApp() {
       })
       .catch(() => setConnected(false));
     const loadTimer = window.setTimeout(() => void loadDocuments(), 0);
-    return () => window.clearTimeout(loadTimer);
-  }, [loadDocuments]);
+    const clientsTimer = window.setTimeout(() => void loadClients(), 0);
+    return () => { window.clearTimeout(loadTimer); window.clearTimeout(clientsTimer); };
+  }, [loadClients, loadDocuments]);
+
+  const selectClient = (clientId: string) => {
+    const client = clients.find((item) => item.id === clientId);
+    setForm((current) => ({
+      ...current,
+      clientId,
+      customerName: client?.name ?? "",
+      customerEmail: client?.email ?? "",
+      customerPhone: client?.phone ?? "",
+      customerCrn: client?.businessNumber ?? client?.identityNumber ?? "",
+    }));
+  };
 
   const update = <Key extends keyof FormState>(
     key: Key,
@@ -224,10 +261,6 @@ export function DocumentApp() {
   };
 
   const issue = async () => {
-    if (!connected) {
-      setSubmitError("צריך לחבר את EasyCount לפני הפקת מסמך אמיתי.");
-      return;
-    }
     setSubmitting(true);
     setSubmitError("");
     setSubmittedOnce(true);
@@ -261,9 +294,8 @@ export function DocumentApp() {
 
   const filteredDocuments = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("he");
-    if (!query) return documents;
-    return documents.filter((document) =>
-      [
+    return documents.filter((document) => {
+      const matchesQuery = !query || [
         document.customerName,
         document.customerEmail ?? "",
         document.docNumber ?? "",
@@ -271,9 +303,14 @@ export function DocumentApp() {
       ]
         .join(" ")
         .toLocaleLowerCase("he")
-        .includes(query),
-    );
-  }, [documents, search]);
+        .includes(query);
+      return matchesQuery &&
+        (!historyStatus || document.status === historyStatus) &&
+        (!historyClient || document.clientId === historyClient) &&
+        (!historyFrom || document.documentDate >= historyFrom) &&
+        (!historyTo || document.documentDate <= historyTo);
+    });
+  }, [documents, historyClient, historyFrom, historyStatus, historyTo, search]);
 
   const PreviewIcon =
     form.documentType === "receipt" ? ReceiptText : FileText;
@@ -286,7 +323,9 @@ export function DocumentApp() {
         <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-8">
           <Navigation view={view} setView={setView} />
 
-          {view === "new" ? (
+          {view === "dashboard" ? (
+            <DashboardView documents={documents} clients={clients} />
+          ) : view === "new" ? (
             <>
               {connected === false && <ConnectionNotice />}
               {success && <SuccessNotice document={success} />}
@@ -300,6 +339,14 @@ export function DocumentApp() {
 
                   <SectionTitle number="1" title="פרטי הלקוח" />
                   <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="sm:col-span-2">
+                      <Field label="בחירת לקוח קיים" hint="אפשר גם להקליד לקוח חד-פעמי">
+                        <NativeSelect value={form.clientId} onChange={(event) => selectClient(event.target.value)} className="h-11 w-full rounded-xl bg-background">
+                          <NativeSelectOption value="">לקוח חדש / חד-פעמי</NativeSelectOption>
+                          {clients.map((client) => <NativeSelectOption key={client.id} value={client.id}>{client.name}</NativeSelectOption>)}
+                        </NativeSelect>
+                      </Field>
+                    </div>
                     <Field label="שם הלקוח" required>
                       <Input
                         value={form.customerName}
@@ -449,7 +496,18 @@ export function DocumentApp() {
                             ))}
                           </NativeSelect>
                         </Field>
+                        <Field label="תאריך תשלום" required>
+                          <Input type="date" dir="ltr" value={form.paymentDate} onChange={(event) => update("paymentDate", event.target.value)} className="h-11 rounded-xl bg-background text-left" />
+                        </Field>
                         <PaymentFields form={form} update={update} />
+                        <Field label="סוג עסקה">
+                          <Input value="כסף התקבל — זכות (credit)" readOnly className="h-11 rounded-xl bg-muted" />
+                        </Field>
+                        <div className="sm:col-span-2">
+                          <Field label="הערות" hint="לא חובה">
+                            <Textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} className="min-h-20 rounded-xl bg-background" />
+                          </Field>
+                        </div>
                       </div>
                     </>
                   )}
@@ -519,14 +577,27 @@ export function DocumentApp() {
                 </aside>
               </div>
             </>
-          ) : (
+          ) : view === "history" ? (
             <HistoryView
               documents={filteredDocuments}
               loading={historyLoading}
               search={search}
               setSearch={setSearch}
+              clients={clients}
+              status={historyStatus}
+              setStatus={setHistoryStatus}
+              clientId={historyClient}
+              setClientId={setHistoryClient}
+              from={historyFrom}
+              setFrom={setHistoryFrom}
+              to={historyTo}
+              setTo={setHistoryTo}
               startNew={() => setView("new")}
             />
+          ) : view === "clients" ? (
+            <ClientsView onChanged={() => void loadClients()} />
+          ) : (
+            <SettingsView />
           )}
         </div>
       </div>
@@ -597,14 +668,18 @@ function Navigation({
   view,
   setView,
 }: {
-  view: "new" | "history";
-  setView: (view: "new" | "history") => void;
+  view: "dashboard" | "new" | "history" | "clients" | "settings";
+  setView: (view: "dashboard" | "new" | "history" | "clients" | "settings") => void;
 }) {
   return (
     <nav
-      className="mb-5 grid max-w-md grid-cols-2 rounded-2xl border bg-card p-1.5 shadow-sm"
+      className="mb-5 flex max-w-3xl gap-1 overflow-x-auto rounded-2xl border bg-card p-1.5 shadow-sm"
       aria-label="ניווט ראשי"
     >
+      <NavButton active={view === "dashboard"} onClick={() => setView("dashboard")}>
+        <LayoutDashboard className="size-4" />
+        סקירה
+      </NavButton>
       <NavButton active={view === "new"} onClick={() => setView("new")}>
         <Plus className="size-4" />
         מסמך חדש
@@ -612,6 +687,14 @@ function Navigation({
       <NavButton active={view === "history"} onClick={() => setView("history")}>
         <History className="size-4" />
         מסמכים שהופקו
+      </NavButton>
+      <NavButton active={view === "clients"} onClick={() => setView("clients")}>
+        <Users className="size-4" />
+        לקוחות
+      </NavButton>
+      <NavButton active={view === "settings"} onClick={() => setView("settings")}>
+        <SettingsIcon className="size-4" />
+        הגדרות
       </NavButton>
     </nav>
   );
@@ -631,7 +714,7 @@ function NavButton({
       type="button"
       onClick={onClick}
       className={
-        "flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition " +
+        "flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition " +
         (active
           ? "bg-primary text-primary-foreground shadow-sm"
           : "text-muted-foreground hover:bg-muted")
@@ -646,23 +729,24 @@ function ConnectionNotice() {
   return (
     <Alert className="mb-5 border-amber-200 bg-amber-50 text-amber-950">
       <AlertCircle />
-      <AlertTitle>המערכת מוכנה לחיבור</AlertTitle>
+      <AlertTitle>מצב בטוח — טיוטות בלבד</AlertTitle>
       <AlertDescription className="text-amber-800">
-        אפשר למלא ולבדוק מסמך. הפקה אמיתית תיפתח לאחר חיבור מפתח ה-API של
-        EasyCount.
+        אפשר למלא, לבדוק ולשמור טיוטה. לא יופק מספר מסמך ולא תישלח בקשה
+        ל-EasyCount.
       </AlertDescription>
     </Alert>
   );
 }
 
 function SuccessNotice({ document }: { document: SavedDocument }) {
+  const isDraft = document.status === "draft";
   return (
-    <Alert className="mb-5 border-emerald-200 bg-emerald-50 text-emerald-950">
+    <Alert className={isDraft ? "mb-5 border-amber-200 bg-amber-50 text-amber-950" : "mb-5 border-emerald-200 bg-emerald-50 text-emerald-950"}>
       <CheckCircle2 />
-      <AlertTitle>{document.documentTypeLabel} הופקה בהצלחה</AlertTitle>
-      <AlertDescription className="flex flex-wrap items-center gap-3 text-emerald-800">
+      <AlertTitle>{isDraft ? "הטיוטה נשמרה" : document.documentTypeLabel + " הופקה בהצלחה"}</AlertTitle>
+      <AlertDescription className={"flex flex-wrap items-center gap-3 " + (isDraft ? "text-amber-800" : "text-emerald-800")}>
         <span>
-          מספר {document.docNumber} עבור {document.customerName}
+          {isDraft ? "זה אינו מסמך מס רשמי" : `מספר ${document.docNumber}`} עבור {document.customerName}
         </span>
         {document.pdfLink && (
           <a
@@ -1049,10 +1133,12 @@ function ReviewDialog({
           <DialogHeader className="text-right">
             <DialogTitle className="flex items-center gap-2 text-xl">
               <ShieldCheck className="size-5 text-primary" />
-              אישור לפני הפקה
+              {connected ? "אישור לפני הפקה" : "אישור שמירת טיוטה"}
             </DialogTitle>
             <DialogDescription className="text-right leading-6">
-              לאחר האישור המסמך יקבל מספר ולא ניתן יהיה למחוק אותו כטיוטה.
+              {connected
+                ? "לאחר האישור המסמך יקבל מספר ולא ניתן יהיה למחוק אותו כטיוטה."
+                : "המסמך יישמר כטיוטה בלבד, ללא מספר רשמי וללא פנייה ל-EasyCount."}
             </DialogDescription>
           </DialogHeader>
         </div>
@@ -1080,7 +1166,7 @@ function ReviewDialog({
               <AlertCircle />
               <AlertTitle>EasyCount עדיין לא מחובר</AlertTitle>
               <AlertDescription>
-                ההפקה תיפתח מיד לאחר השלמת החיבור המאובטח.
+                הפעולה הבאה תשמור טיוטה בלבד. זה אינו מסמך מס רשמי.
               </AlertDescription>
             </Alert>
           )}
@@ -1097,11 +1183,17 @@ function ReviewDialog({
             type="button"
             size="lg"
             onClick={issue}
-            disabled={!connected || submitting}
+            disabled={submitting}
             className="h-11 rounded-xl px-6"
           >
             {submitting ? <Loader2 className="animate-spin" /> : <Send />}
-            {submitting ? "מפיק את המסמך..." : "מאשר ומפיק"}
+            {submitting
+              ? connected
+                ? "מפיק את המסמך..."
+                : "שומר טיוטה..."
+              : connected
+                ? "מאשר ומפיק"
+                : "שומר טיוטה"}
           </Button>
           <Button
             type="button"
@@ -1143,12 +1235,30 @@ function HistoryView({
   loading,
   search,
   setSearch,
+  clients,
+  status,
+  setStatus,
+  clientId,
+  setClientId,
+  from,
+  setFrom,
+  to,
+  setTo,
   startNew,
 }: {
   documents: SavedDocument[];
   loading: boolean;
   search: string;
   setSearch: (value: string) => void;
+  clients: Client[];
+  status: string;
+  setStatus: (value: string) => void;
+  clientId: string;
+  setClientId: (value: string) => void;
+  from: string;
+  setFrom: (value: string) => void;
+  to: string;
+  setTo: (value: string) => void;
   startNew: () => void;
 }) {
   return (
@@ -1156,7 +1266,7 @@ function HistoryView({
       <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-xs font-bold text-primary">היסטוריה</p>
-          <h2 className="mt-1 text-2xl font-black">מסמכים שהופקו</h2>
+          <h2 className="mt-1 text-2xl font-black">היסטוריית מסמכים</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             עד 100 המסמכים האחרונים
           </p>
@@ -1174,6 +1284,21 @@ function HistoryView({
           placeholder="חיפוש לפי לקוח, מספר או תיאור"
           className="h-11 rounded-xl bg-background pr-10"
         />
+      </div>
+      <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <NativeSelect value={clientId} onChange={(event) => setClientId(event.target.value)} className="h-11 rounded-xl bg-background">
+          <NativeSelectOption value="">כל הלקוחות</NativeSelectOption>
+          {clients.map((client) => <NativeSelectOption key={client.id} value={client.id}>{client.name}</NativeSelectOption>)}
+        </NativeSelect>
+        <NativeSelect value={status} onChange={(event) => setStatus(event.target.value)} className="h-11 rounded-xl bg-background">
+          <NativeSelectOption value="">כל הסטטוסים</NativeSelectOption>
+          <NativeSelectOption value="draft">טיוטה</NativeSelectOption>
+          <NativeSelectOption value="issued">הופק</NativeSelectOption>
+          <NativeSelectOption value="failed">נכשל</NativeSelectOption>
+          <NativeSelectOption value="unknown">דרוש בירור</NativeSelectOption>
+        </NativeSelect>
+        <Input type="date" aria-label="מתאריך" value={from} onChange={(event) => setFrom(event.target.value)} className="h-11 rounded-xl bg-background" />
+        <Input type="date" aria-label="עד תאריך" value={to} onChange={(event) => setTo(event.target.value)} className="h-11 rounded-xl bg-background" />
       </div>
       {loading ? (
         <div className="grid min-h-56 place-items-center text-muted-foreground">
@@ -1210,6 +1335,8 @@ function HistoryItem({ document }: { document: SavedDocument }) {
   const status =
     document.status === "issued"
       ? { label: "הופק", color: "bg-emerald-100 text-emerald-800" }
+      : document.status === "draft"
+        ? { label: "טיוטה", color: "bg-slate-100 text-slate-800" }
       : document.status === "pending"
         ? { label: "בהפקה", color: "bg-amber-100 text-amber-800" }
         : document.status === "unknown"

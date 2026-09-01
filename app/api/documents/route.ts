@@ -1,11 +1,13 @@
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { businessDocuments } from "@/db/schema";
+import { businessDocuments, clients, payments } from "@/db/schema";
 import {
   EzcountUncertainError,
   getEzcountStatus,
   issueReceipt,
-} from "@/lib/ezcount";
+} from "@/services/easycount";
+import { authenticatedOwnerId } from "@/lib/auth";
+import { writeAuditLog } from "@/lib/audit";
 import {
   documentTypeLabel,
   paymentMethodLabel,
@@ -13,15 +15,10 @@ import {
   type ReceiptInput,
 } from "@/lib/receipt-schema";
 
-function ownerId(request: Request) {
-  const authenticatedId = request.headers.get("oai-authenticated-user-id");
-  if (authenticatedId) return authenticatedId;
-  return process.env.NODE_ENV === "production" ? null : "local-preview";
-}
-
 function clientDocument(row: typeof businessDocuments.$inferSelect) {
   return {
     id: row.id,
+    clientId: row.clientId,
     documentType: row.documentType,
     documentTypeLabel:
       row.documentType === "receipt" ? "קבלה" : "חשבונית עסקה",
@@ -61,8 +58,36 @@ function storedPaymentSummary(input: ReceiptInput) {
   });
 }
 
+const storedPaymentMethods: Record<number, string> = {
+  1: "cash",
+  2: "check",
+  3: "credit_card",
+  4: "bank_transfer",
+  9: "other",
+  91: "other",
+};
+
+async function savePayment(ownerUserId: string, input: ReceiptInput, now: string) {
+  if (input.documentType !== "receipt") return;
+  await getDb().insert(payments).values({
+    id: input.idempotencyKey + ":payment",
+    ownerUserId,
+    documentId: input.idempotencyKey,
+    paymentDate: input.paymentDate || input.documentDate,
+    amountAgorot: Math.round(input.amount * 100),
+    paymentMethod: storedPaymentMethods[input.paymentType] ?? "other",
+    transactionType: "credit",
+    reference: input.paymentReference || null,
+    notes: input.notes || null,
+    cardType: input.paymentType === 3 ? input.cardType : null,
+    cardLastFour: input.paymentType === 3 ? input.cardLastFour : null,
+    createdAt: now,
+    updatedAt: now,
+  }).onConflictDoNothing();
+}
+
 export async function GET(request: Request) {
-  const currentOwnerId = ownerId(request);
+  const currentOwnerId = authenticatedOwnerId(request);
   if (!currentOwnerId) {
     return Response.json({ error: "נדרשת התחברות" }, { status: 401 });
   }
@@ -82,7 +107,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const currentOwnerId = ownerId(request);
+  const currentOwnerId = authenticatedOwnerId(request);
   if (!currentOwnerId) {
     return Response.json({ error: "נדרשת התחברות" }, { status: 401 });
   }
@@ -99,19 +124,22 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!getEzcountStatus().configured) {
-    return Response.json(
-      {
-        error: "המערכת מוכנה, אך EasyCount עדיין לא מחובר",
-        code: "EZCOUNT_NOT_CONFIGURED",
-      },
-      { status: 503 },
-    );
-  }
-
   const input = parsed.data;
   const db = getDb();
   const now = new Date().toISOString();
+  const easycountStatus = getEzcountStatus();
+  const initialStatus = easycountStatus.configured ? "pending" : "draft";
+
+  if (input.clientId) {
+    const [ownedClient] = await db
+      .select({ id: clients.id })
+      .from(clients)
+      .where(and(eq(clients.id, input.clientId), eq(clients.ownerUserId, currentOwnerId)))
+      .limit(1);
+    if (!ownedClient) {
+      return Response.json({ error: "הלקוח שנבחר אינו זמין" }, { status: 400 });
+    }
+  }
 
   try {
     const inserted = await db
@@ -119,6 +147,7 @@ export async function POST(request: Request) {
       .values({
         id: input.idempotencyKey,
         ownerUserId: currentOwnerId,
+        clientId: input.clientId || null,
         customerName: input.customerName,
         customerEmail: input.customerEmail || null,
         customerPhone: input.customerPhone || null,
@@ -126,11 +155,14 @@ export async function POST(request: Request) {
         documentType: input.documentType,
         amountAgorot: Math.round(input.amount * 100),
         documentDate: input.documentDate,
+        paymentDate: input.documentType === "receipt" ? input.paymentDate || input.documentDate : null,
+        transactionType: input.documentType === "receipt" ? "credit" : null,
         dueDate: input.dueDate || null,
         paymentType: input.documentType === "receipt" ? input.paymentType : null,
         paymentDetailsJson: storedPaymentSummary(input),
         description: input.description,
-        status: "pending",
+        notes: input.notes || null,
+        status: initialStatus,
         createdAt: now,
         updatedAt: now,
       })
@@ -174,6 +206,32 @@ export async function POST(request: Request) {
       );
     }
 
+    if (!easycountStatus.configured) {
+      const [draft] = existing
+        ? [existing]
+        : await db
+            .select()
+            .from(businessDocuments)
+            .where(
+              and(
+                eq(businessDocuments.id, input.idempotencyKey),
+                eq(businessDocuments.ownerUserId, currentOwnerId),
+              ),
+            )
+            .limit(1);
+
+      await savePayment(currentOwnerId, input, now);
+      await writeAuditLog({ ownerUserId: currentOwnerId, action: "document.draft_saved", entityType: "document", entityId: input.idempotencyKey });
+      return Response.json(
+        {
+          document: clientDocument(draft),
+          duplicate: Boolean(existing),
+          message: "הטיוטה נשמרה. זה אינו מסמך מס רשמי.",
+        },
+        { status: existing ? 200 : 201 },
+      );
+    }
+
     if (existing?.status === "pending") {
       return Response.json(
         { error: "המסמך כבר נמצא בתהליך הפקה", code: "DOCUMENT_IN_PROGRESS" },
@@ -201,7 +259,15 @@ export async function POST(request: Request) {
       }
     }
 
+    await writeAuditLog({
+      ownerUserId: currentOwnerId,
+      action: "document.issue_attempted",
+      entityType: "document",
+      entityId: input.idempotencyKey,
+      metadata: { environment: easycountStatus.environment },
+    });
     const issued = await issueReceipt(input);
+    await savePayment(currentOwnerId, input, now);
     const [saved] = await db
       .update(businessDocuments)
       .set({
@@ -212,8 +278,20 @@ export async function POST(request: Request) {
         errorMessage: null,
         updatedAt: new Date().toISOString(),
       })
-      .where(eq(businessDocuments.id, input.idempotencyKey))
+      .where(
+        and(
+          eq(businessDocuments.id, input.idempotencyKey),
+          eq(businessDocuments.ownerUserId, currentOwnerId),
+        ),
+      )
       .returning();
+
+    await writeAuditLog({
+      ownerUserId: currentOwnerId,
+      action: "document.issued",
+      entityType: "document",
+      entityId: input.idempotencyKey,
+    });
 
     return Response.json(
       {
@@ -240,6 +318,15 @@ export async function POST(request: Request) {
         ),
       )
       .catch(() => undefined);
+
+    await writeAuditLog({
+      ownerUserId: currentOwnerId,
+      action: "document.issue_failed",
+      entityType: "document",
+      entityId: input.idempotencyKey,
+      outcome: "failure",
+      metadata: { uncertain: error instanceof EzcountUncertainError },
+    });
 
     return Response.json({ error: message }, { status: 502 });
   }

@@ -5,6 +5,7 @@ import handler from "vinext/server/app-router-entry";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  EASYCOUNT_ENABLED?: string;
   EZCOUNT_API_KEY?: string;
   EZCOUNT_DEVELOPER_EMAIL?: string;
   EZCOUNT_BASE_URL?: string;

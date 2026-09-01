@@ -14,6 +14,7 @@ const optionalText = z.string().trim().max(200).optional().default("");
 export const receiptInputSchema = z
   .object({
     idempotencyKey: z.string().trim().min(8).max(100),
+    clientId: z.string().uuid().optional().or(z.literal("")),
     documentType: z.enum(["receipt", "proforma"]),
     customerName: z.string().trim().min(2, "יש להזין שם לקוח").max(150),
     customerEmail: z
@@ -40,6 +41,7 @@ export const receiptInputSchema = z
     documentDate: z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/, "יש לבחור תאריך מסמך"),
+    paymentDate: z.string().regex(/^$|^\d{4}-\d{2}-\d{2}$/, "תאריך התשלום אינו תקין").optional().default(""),
     dueDate: z
       .string()
       .regex(/^$|^\d{4}-\d{2}-\d{2}$/, "תאריך היעד אינו תקין")
@@ -51,6 +53,7 @@ export const receiptInputSchema = z
         message: "יש לבחור אמצעי תשלום",
       }),
     description: z.string().trim().max(500).optional().default(""),
+    notes: z.string().trim().max(1000).optional().default(""),
     paymentReference: optionalText,
     webVendor: optionalText,
     checkBankName: optionalText,

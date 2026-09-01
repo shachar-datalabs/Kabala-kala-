@@ -8,6 +8,13 @@
       "when": 1788189620029,
       "tag": "0000_flawless_lake",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788207243485,
+      "tag": "0001_chunky_hairball",
+      "breakpoints": true
     }
   ]
 }

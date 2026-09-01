@@ -1,12 +1,12 @@
 import { env } from "cloudflare:workers";
 import { z } from "zod";
 import type { ReceiptInput } from "@/lib/receipt-schema";
-
-type RuntimeEnv = {
-  EZCOUNT_API_KEY?: string;
-  EZCOUNT_DEVELOPER_EMAIL?: string;
-  EZCOUNT_BASE_URL?: string;
-};
+import {
+  EASYCOUNT_DEMO_BASE_URL,
+  assertEasycountIssuingEnabled,
+  evaluateEasycountConfiguration,
+  type EasycountRuntimeConfig,
+} from "@/services/easycount/config";
 
 const ezcountResponseSchema = z
   .object({
@@ -28,21 +28,12 @@ export type IssuedReceipt = {
 
 export class EzcountUncertainError extends Error {}
 
-const DEMO_BASE_URL = "https://demo.ezcount.co.il";
-
-function runtimeEnv(): RuntimeEnv {
-  return env as unknown as RuntimeEnv;
+function runtimeEnv(): EasycountRuntimeConfig {
+  return env as unknown as EasycountRuntimeConfig;
 }
 
 export function getEzcountStatus() {
-  const runtime = runtimeEnv();
-  const demoOnly = runtime.EZCOUNT_BASE_URL === DEMO_BASE_URL;
-  return {
-    configured: Boolean(
-      runtime.EZCOUNT_API_KEY && runtime.EZCOUNT_DEVELOPER_EMAIL && demoOnly,
-    ),
-    environment: demoOnly ? "demo" : "blocked",
-  };
+  return evaluateEasycountConfiguration(runtimeEnv());
 }
 
 function formatDate(date: string) {
@@ -111,6 +102,7 @@ function buildPayment(input: ReceiptInput) {
 
 export async function issueReceipt(input: ReceiptInput): Promise<IssuedReceipt> {
   const runtime = runtimeEnv();
+  assertEasycountIssuingEnabled(runtime);
   const apiKey = runtime.EZCOUNT_API_KEY;
   const developerEmail = runtime.EZCOUNT_DEVELOPER_EMAIL;
 
@@ -119,7 +111,7 @@ export async function issueReceipt(input: ReceiptInput): Promise<IssuedReceipt> 
   }
 
   const baseUrl = runtime.EZCOUNT_BASE_URL;
-  if (baseUrl !== DEMO_BASE_URL) {
+  if (baseUrl !== EASYCOUNT_DEMO_BASE_URL) {
     throw new Error("הפקת מסמכים מותרת כרגע בסביבת EasyCount Demo בלבד");
   }
 
